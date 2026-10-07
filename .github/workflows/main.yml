@@ -120,6 +120,62 @@ jobs:
           p.write_text(s)
           PY
 
+
+      - name: Fix Android TTS
+        shell: bash
+        working-directory: source
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          manifest = Path("app/src/main/AndroidManifest.xml")
+          m = manifest.read_text()
+          recognition_block = '        <intent>\n            <action android:name="android.speech.RecognitionService" />\n        </intent>'
+          tts_block = '        <intent>\n            <action android:name="android.intent.action.TTS_SERVICE" />\n        </intent>'
+          if 'android.intent.action.TTS_SERVICE' not in m:
+              if recognition_block not in m:
+                  raise SystemExit("RecognitionService query block not found")
+              m = m.replace(recognition_block, recognition_block + '\n' + tts_block, 1)
+              manifest.write_text(m)
+
+          p = Path("app/src/main/java/com/example/audio/JarvisTtsManager.kt")
+          s = p.read_text()
+
+          if 'private var pendingSpeech' not in s:
+              s = s.replace(
+                  '    private var isInitialized = false\n',
+                  '    private var isInitialized = false\n    private var pendingSpeech: Pair<String, Boolean>? = null\n',
+                  1
+              )
+
+          s = s.replace(
+              '        tts = TextToSpeech(context, this)',
+              '        tts = TextToSpeech(context.applicationContext, this)'
+          )
+
+          init_old = '            isInitialized = true\n            setupVoice()'
+          init_new = '            isInitialized = true\n            setupVoice()\n            pendingSpeech?.let { (text, queueAdd) ->\n                pendingSpeech = null\n                speak(text, queueAdd)\n            }'
+          if init_old in s and 'pendingSpeech?.let' not in s:
+              s = s.replace(init_old, init_new, 1)
+
+          guard_old = '        if (!isInitialized || text.isBlank()) return'
+          guard_new = '        if (text.isBlank()) return\n        if (!isInitialized) {\n            pendingSpeech = text to isQueueAdd\n            return\n        }'
+          if guard_old in s:
+              s = s.replace(guard_old, guard_new, 1)
+
+          ar_old = '            if ((tts?.isLanguageAvailable(arLocale) ?: -1) >= TextToSpeech.LANG_AVAILABLE) {\n                tts?.language = arLocale\n            }'
+          ar_new = '            val arAvailability = tts?.isLanguageAvailable(arLocale) ?: TextToSpeech.LANG_NOT_SUPPORTED\n            if (arAvailability >= TextToSpeech.LANG_AVAILABLE) {\n                tts?.language = arLocale\n            } else {\n                tts?.language = Locale.getDefault()\n            }'
+          if ar_old in s:
+              s = s.replace(ar_old, ar_new, 1)
+
+          speak_old = '        tts?.speak(cleanText, queueMode, params, "jarvis_speech")'
+          speak_new = '        val result = tts?.speak(cleanText, queueMode, params, "jarvis_${System.currentTimeMillis()}")\n        if (result == TextToSpeech.ERROR) {\n            Log.e("JarvisTts", "TTS speak() returned ERROR")\n        }'
+          if speak_old in s:
+              s = s.replace(speak_old, speak_new, 1)
+
+          p.write_text(s)
+          PY
+
       - name: Build debug APK
         shell: bash
         working-directory: source
